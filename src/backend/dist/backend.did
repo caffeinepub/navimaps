@@ -1,0 +1,9 @@
+service : {
+  /// Proxy OSRM routing request.
+  /// Returns raw JSON string from OSRM, or an error JSON string on failure.
+  calculateRoute: (fromLon: float64, fromLat: float64, toLon: float64, toLat:
+   float64) -> (text);
+  /// Proxy Nominatim geocoding request.
+  /// Returns raw JSON string from Nominatim, or an error JSON string on failure.
+  geocodeAddress: (searchQuery: text) -> (text);
+}
