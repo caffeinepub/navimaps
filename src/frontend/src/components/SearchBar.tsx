@@ -1,7 +1,7 @@
 import { cn } from "@/lib/utils";
 import type { Place } from "@/types";
 import { Loader2, MapPin, Navigation, Search, X } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 interface SearchBarProps {
   value: string;
@@ -36,24 +36,37 @@ export function SearchBar({
 }: SearchBarProps) {
   const [open, setOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Tracks whether the pointer is held down inside the dropdown — prevents blur from closing it
+  const dropdownMouseDown = useRef(false);
+
+  // Re-open dropdown when new suggestions arrive while input is focused (handles async delay)
+  useEffect(() => {
+    if (
+      (suggestions.length > 0 || loading || noResults) &&
+      document.activeElement === inputRef.current
+    ) {
+      setOpen(true);
+    }
+  }, [suggestions, loading, noResults]);
 
   const showDropdown = open && (loading || suggestions.length > 0 || noResults);
 
   const handleChange = (val: string) => {
     onChange(val);
-    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
     if (val.trim().length >= 2) {
       setOpen(true);
-      timeoutRef.current = setTimeout(() => {
+      debounceRef.current = setTimeout(() => {
         onSearch(val);
-      }, 400);
+      }, 350);
     } else {
       setOpen(false);
     }
   };
 
   const handleSelect = (place: Place) => {
+    dropdownMouseDown.current = false;
     onSelect(place);
     onChange(place.name);
     setOpen(false);
@@ -65,6 +78,15 @@ export function SearchBar({
     onChange("");
     setOpen(false);
     inputRef.current?.focus();
+  };
+
+  const handleBlur = () => {
+    // If the pointer is inside the dropdown, don't close — the mousedown handler will call handleSelect
+    if (dropdownMouseDown.current) return;
+    // Small delay so a quick click on the dropdown still registers first
+    setTimeout(() => {
+      if (!dropdownMouseDown.current) setOpen(false);
+    }, 200);
   };
 
   return (
@@ -97,16 +119,16 @@ export function SearchBar({
           onChange={(e) => handleChange(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && value.trim()) {
-              if (timeoutRef.current) clearTimeout(timeoutRef.current);
+              if (debounceRef.current) clearTimeout(debounceRef.current);
               onSearch(value);
               setOpen(true);
             }
             if (e.key === "Escape") setOpen(false);
           }}
-          onFocus={() =>
-            (suggestions.length > 0 || loading || noResults) && setOpen(true)
-          }
-          onBlur={() => setTimeout(() => setOpen(false), 150)}
+          onFocus={() => {
+            if (suggestions.length > 0 || loading || noResults) setOpen(true);
+          }}
+          onBlur={handleBlur}
           placeholder={placeholder}
           disabled={disabled}
           className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none min-w-0"
@@ -137,6 +159,20 @@ export function SearchBar({
         <div
           className="absolute top-full left-0 right-0 z-50 mt-1 bg-card border border-border rounded-xl shadow-lg overflow-hidden fade-up"
           data-ocid="search-suggestions"
+          // Set flag on pointer down so blur handler knows not to close the dropdown
+          onMouseDown={() => {
+            dropdownMouseDown.current = true;
+          }}
+          onMouseUp={() => {
+            dropdownMouseDown.current = false;
+          }}
+          // Touch support
+          onTouchStart={() => {
+            dropdownMouseDown.current = true;
+          }}
+          onTouchEnd={() => {
+            dropdownMouseDown.current = false;
+          }}
         >
           {/* Loading state */}
           {loading && (
@@ -152,8 +188,16 @@ export function SearchBar({
               <button
                 key={place.id}
                 type="button"
-                onMouseDown={() => handleSelect(place)}
-                className="w-full flex items-start gap-3 px-3 py-2.5 text-left hover:bg-muted/50 transition-smooth border-t border-border/50 first:border-t-0"
+                onMouseDown={(e) => {
+                  // Prevent input blur from firing before we handle selection
+                  e.preventDefault();
+                  handleSelect(place);
+                }}
+                onTouchEnd={(e) => {
+                  e.preventDefault();
+                  handleSelect(place);
+                }}
+                className="w-full flex items-start gap-3 px-3 py-2.5 text-left hover:bg-muted/50 active:bg-muted transition-smooth border-t border-border/50 first:border-t-0 cursor-pointer"
                 data-ocid={`suggestion-${place.id}`}
               >
                 <Navigation className="w-4 h-4 mt-0.5 shrink-0 text-primary" />

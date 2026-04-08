@@ -34,15 +34,27 @@ function formatAddress(displayName: string): string {
   return `${head}, ${tail}`;
 }
 
-/** Direct Nominatim fallback — used when the backend actor is unavailable */
+/** Direct Nominatim search — primary geocoding method */
 async function nominatimSearch(query: string): Promise<NominatimResult[]> {
-  const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=8&addressdetails=1`;
-  console.log("[useGeocoding] Falling back to direct Nominatim:", url);
-  const res = await fetch(url, {
-    headers: { "Accept-Language": "nl", "User-Agent": "NaviMaps/1.0" },
+  const params = new URLSearchParams({
+    q: query,
+    format: "json",
+    limit: "5",
+    addressdetails: "1",
   });
-  if (!res.ok) throw new Error(`Nominatim status ${res.status}`);
-  return res.json() as Promise<NominatimResult[]>;
+  const url = `https://nominatim.openstreetmap.org/search?${params.toString()}`;
+  console.log("[useGeocoding] Nominatim search:", url);
+  const res = await fetch(url, {
+    headers: {
+      "Accept-Language": "nl",
+      "User-Agent": "NaviMaps/1.0 (caffeine.ai)",
+      Accept: "application/json",
+    },
+  });
+  if (!res.ok) throw new Error(`Nominatim HTTP ${res.status}`);
+  const data = (await res.json()) as unknown;
+  if (!Array.isArray(data)) throw new Error("Nominatim returned non-array");
+  return data as NominatimResult[];
 }
 
 function parseNominatimResults(data: NominatimResult[]): Place[] {
@@ -80,49 +92,14 @@ export function useGeocoding() {
       }
 
       setState({ results: [], loading: true, error: null, noResults: false });
+      console.log(`[useGeocoding] geocode("${trimmed}")`);
 
-      // Try backend actor first, fall back to direct Nominatim if unavailable
-      const actorReady = actor && !isFetching;
-      console.log(
-        `[useGeocoding] geocode("${trimmed}") — actor ready: ${actorReady}, isFetching: ${isFetching}`,
-      );
-
+      // Use Nominatim directly as the primary path — it's fast and reliable.
+      // Only fall back to the backend actor if direct fetch fails.
       try {
-        let data: NominatimResult[];
+        const data = await nominatimSearch(trimmed);
 
-        if (actorReady) {
-          console.log("[useGeocoding] Calling backend.geocodeAddress…");
-          try {
-            // The actor is typed as unknown in useActor — cast through backendInterface
-            const jsonStr = await (
-              actor as { geocodeAddress: (q: string) => Promise<string> }
-            ).geocodeAddress(trimmed);
-            console.log("[useGeocoding] Backend response received, parsing…");
-            const parsed = JSON.parse(jsonStr) as
-              | NominatimResult[]
-              | { error?: string };
-            if (!Array.isArray(parsed)) {
-              console.warn(
-                "[useGeocoding] Backend returned non-array:",
-                parsed,
-              );
-              // fall through to direct nominatim
-              data = await nominatimSearch(trimmed);
-            } else {
-              data = parsed;
-            }
-          } catch (backendErr) {
-            console.warn(
-              "[useGeocoding] Backend call failed, using fallback:",
-              backendErr,
-            );
-            data = await nominatimSearch(trimmed);
-          }
-        } else {
-          data = await nominatimSearch(trimmed);
-        }
-
-        if (!Array.isArray(data) || data.length === 0) {
+        if (data.length === 0) {
           setState({
             results: [],
             loading: false,
@@ -141,12 +118,52 @@ export function useGeocoding() {
           noResults: false,
         });
         return places;
-      } catch (err) {
-        console.error("[useGeocoding] Alle zoekmethoden mislukt:", err);
+      } catch (nominatimErr) {
+        console.warn(
+          "[useGeocoding] Nominatim mislukt, probeer backend actor:",
+          nominatimErr,
+        );
+
+        // Fallback: try backend canister
+        const actorReady = actor && !isFetching;
+        if (actorReady) {
+          try {
+            const jsonStr = await (
+              actor as { geocodeAddress: (q: string) => Promise<string> }
+            ).geocodeAddress(trimmed);
+            const parsed = JSON.parse(jsonStr) as
+              | NominatimResult[]
+              | { error?: string };
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              const places = parseNominatimResults(parsed);
+              setState({
+                results: places,
+                loading: false,
+                error: null,
+                noResults: false,
+              });
+              return places;
+            }
+            setState({
+              results: [],
+              loading: false,
+              error: null,
+              noResults: true,
+            });
+            return [];
+          } catch (backendErr) {
+            console.error(
+              "[useGeocoding] Backend actor ook mislukt:",
+              backendErr,
+            );
+          }
+        }
+
         setState({
           results: [],
           loading: false,
-          error: "Zoeken tijdelijk niet beschikbaar.",
+          error:
+            "Zoeken tijdelijk niet beschikbaar. Controleer uw internetverbinding.",
           noResults: false,
         });
         return [];
@@ -158,9 +175,13 @@ export function useGeocoding() {
   const reverseGeocode = useCallback(
     async (coord: Coordinate): Promise<Place | null> => {
       try {
-        const url = `https://nominatim.openstreetmap.org/reverse?lat=${coord.lat}&lon=${coord.lng}&format=json`;
+        const url = `https://nominatim.openstreetmap.org/reverse?lat=${coord.lat}&lon=${coord.lng}&format=json&addressdetails=1`;
         const res = await fetch(url, {
-          headers: { "Accept-Language": "nl", "User-Agent": "NaviMaps/1.0" },
+          headers: {
+            "Accept-Language": "nl",
+            "User-Agent": "NaviMaps/1.0 (caffeine.ai)",
+            Accept: "application/json",
+          },
         });
         if (!res.ok) return null;
         const item = (await res.json()) as NominatimResult;
